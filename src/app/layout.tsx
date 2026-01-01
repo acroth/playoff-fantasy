@@ -5,6 +5,7 @@ import { Roboto } from 'next/font/google';
 import { ThemeProvider } from '@mui/material/styles';
 import theme from '@/components/global/theme';
 import Navigation from '@/components/Navigation';
+import QueryProvider from '@/providers/QueryProvider';
 
 const roboto = Roboto({
   weight: ['300', '400', '500', '700'],
@@ -25,12 +26,14 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className={`${roboto.variable}`}>
-        <AppRouterCacheProvider>
-          <ThemeProvider theme={theme}>
-            <Navigation />
-            {children}
-          </ThemeProvider>
-        </AppRouterCacheProvider>
+        <QueryProvider>
+          <AppRouterCacheProvider>
+            <ThemeProvider theme={theme}>
+              <Navigation />
+              {children}
+            </ThemeProvider>
+          </AppRouterCacheProvider>
+        </QueryProvider>
       </body>
     </html>
   );

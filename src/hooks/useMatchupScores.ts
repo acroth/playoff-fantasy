@@ -1,9 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import { Roster } from '@/types/fantasy.types';
 import { scoringRules } from '@/data/scoring';
-import { calculateRosterPoints } from '@/utils/scoring';
 import { fetchPlayerStats, fetchTeamStats, fetchScoreboard } from '@/utils/espn';
 
 interface PositionScore {
@@ -23,123 +22,93 @@ interface RosterScore {
   loading: boolean;
 }
 
-// Hook to calculate live scores for a matchup
+// Hook to calculate live scores for a matchup using TanStack Query
 export function useMatchupScores(
   team1Roster: Roster | null,
   team2Roster: Roster | null,
-  refreshKey: number = 0
 ) {
-  const [team1Score, setTeam1Score] = useState<RosterScore>({
-    positions: [],
-    totalPoints: 0,
-    loading: true,
+  // Fetch scoreboard with automatic refetching
+  const { data: scoreboard } = useQuery({
+    queryKey: ['scoreboard'],
+    queryFn: fetchScoreboard,
+    refetchInterval: 60 * 1000, // Refetch every minute
+    staleTime: 30 * 1000, // Consider stale after 30 seconds
   });
-  const [team2Score, setTeam2Score] = useState<RosterScore>({
-    positions: [],
-    totalPoints: 0,
-    loading: true,
-  });
-  const [scoreboard, setScoreboard] = useState<any>(null);
 
-  useEffect(() => {
-    const loadScores = async () => {
-      // Fetch scoreboard first
-      const scoreboardData = await fetchScoreboard();
-      setScoreboard(scoreboardData);
-
-      // Calculate team 1 score
-      if (team1Roster) {
-        const team1Data = await calculateTeamScore(team1Roster);
-        setTeam1Score(team1Data);
-      }
-
-      // Calculate team 2 score
-      if (team2Roster) {
-        const team2Data = await calculateTeamScore(team2Roster);
-        setTeam2Score(team2Data);
-      }
-    };
-
-    loadScores();
-  }, [team1Roster, team2Roster, refreshKey]);
+  // Calculate scores for both teams
+  const team1Score = useTeamScore(team1Roster);
+  const team2Score = useTeamScore(team2Roster);
 
   return { team1Score, team2Score, scoreboard };
 }
 
-// Helper function to calculate score for a single team
-async function calculateTeamScore(roster: Roster): Promise<RosterScore> {
+// Helper hook to calculate score for a single team
+function useTeamScore(roster: Roster | null): RosterScore {
+  const positionEntries = roster ? (Object.entries(roster) as [keyof Roster, string][]) : [];
+
+  // Fetch all player/team data in parallel using useQueries
+  const queries = useQueries({
+    queries: positionEntries.map(([position, playerId]) => ({
+      queryKey: position === 'DST' ? ['team', playerId] : ['player', playerId],
+      queryFn: () => position === 'DST' ? fetchTeamStats(playerId) : fetchPlayerStats(playerId),
+      enabled: !!roster,
+      staleTime: 60 * 1000,
+    })),
+  });
+
+  if (!roster) {
+    return {
+      positions: [],
+      totalPoints: 0,
+      loading: false,
+    };
+  }
+
+  const isLoading = queries.some(q => q.isLoading);
   const positions: PositionScore[] = [];
   let totalPoints = 0;
 
-  // Fetch all player data in parallel
-  const positionEntries = Object.entries(roster) as [keyof Roster, string][];
-  
-  const results = await Promise.all(
-    positionEntries.map(async ([position, playerId]) => {
-      const isDST = position === 'DST';
-      
-      try {
-        if (isDST) {
-          const teamData = await fetchTeamStats(playerId);
-          if (teamData) {
-            const points = calculateDefensePointsFromStats(teamData.stats || {});
-            return {
-              playerId,
-              position,
-              points,
-              playerName: teamData.team?.displayName || `Team ${playerId}`,
-              teamAbbr: teamData.team?.abbreviation || '',
-              loading: false,
-              error: Object.keys(teamData.stats || {}).length === 0 ? 'No data' : undefined,
-            };
-          }
-        } else {
-          const playerData = await fetchPlayerStats(playerId);
-          if (playerData) {
-            const points = calculatePlayerPointsFromStats(playerData.stats || {});
-            const hasData = Object.keys(playerData.stats || {}).length > 0;
-            return {
-              playerId,
-              position,
-              points,
-              playerName: playerData.player?.displayName || `Player ${playerId}`,
-              teamAbbr: playerData.player?.team?.abbreviation || '',
-              loading: false,
-              error: !hasData ? 'No data' : undefined,
-            };
-          }
-        }
-      } catch (error) {
-        return {
-          playerId,
-          position,
-          points: 0,
-          playerName: isDST ? `Team ${playerId}` : `Player ${playerId}`,
-          loading: false,
-          error: 'Failed to load',
-        };
-      }
-      
-      return {
+  queries.forEach((query, index) => {
+    const [position, playerId] = positionEntries[index];
+    const isDST = position === 'DST';
+
+    if (query.isSuccess && query.data) {
+      const data = query.data;
+      const points = isDST
+        ? calculateDefensePointsFromStats(data.stats || {})
+        : calculatePlayerPointsFromStats(data.stats || {});
+
+      positions.push({
+        playerId,
+        position,
+        points,
+        playerName: isDST 
+          ? data.team?.displayName || `Team ${playerId}`
+          : data.player?.displayName || `Player ${playerId}`,
+        teamAbbr: isDST 
+          ? data.team?.abbreviation || ''
+          : data.player?.team?.abbreviation || '',
+        loading: false,
+        error: Object.keys(data.stats || {}).length === 0 ? 'No data' : undefined,
+      });
+
+      totalPoints += points;
+    } else {
+      positions.push({
         playerId,
         position,
         points: 0,
         playerName: isDST ? `Team ${playerId}` : `Player ${playerId}`,
-        loading: false,
-        error: 'No data',
-      };
-    })
-  );
-
-  results.forEach(result => {
-    positions.push(result);
-    totalPoints += result.points;
+        loading: query.isLoading,
+        error: query.isError ? 'Failed to load' : undefined,
+      });
+    }
   });
 
   return {
     positions,
     totalPoints: Math.round(totalPoints * 100) / 100,
-    loading: false,
+    loading: isLoading,
   };
 }
 
@@ -204,4 +173,3 @@ function calculateDefensePointsFromStats(stats: any): number {
 
   return Math.round(points * 100) / 100;
 }
-

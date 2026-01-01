@@ -3,12 +3,12 @@
 import { useState, useEffect } from 'react';
 import { Container, Box, Button, Alert, CircularProgress } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import { useQueryClient } from '@tanstack/react-query';
 import WeekSelector from '@/components/WeekSelector';
 import MatchupCard from '@/components/MatchupCard';
 import PlayoffBracket from '@/components/PlayoffBracket';
 import { weeklyRosters, getWeekData } from '@/data/rosters';
 import { useMatchupScores } from '@/hooks/useMatchupScores';
-import { useAutoRefresh } from '@/hooks/useAutoRefresh';
 import { fetchScoreboard } from '@/utils/espn';
 import { shouldAutoRefresh } from '@/utils/dateTime';
 
@@ -16,9 +16,7 @@ export default function Home() {
   const [selectedWeek, setSelectedWeek] = useState(1);
   const [hasLiveGames, setHasLiveGames] = useState(false);
   const [showBracket, setShowBracket] = useState(false);
-  
-  // Auto-refresh during live games (every 15 minutes)
-  const { refreshKey, lastRefresh, manualRefresh } = useAutoRefresh(hasLiveGames, 15 * 60 * 1000);
+  const queryClient = useQueryClient();
 
   // Check for live games
   useEffect(() => {
@@ -32,7 +30,14 @@ export default function Home() {
     // Check every minute if games have started
     const interval = setInterval(checkLiveGames, 60 * 1000);
     return () => clearInterval(interval);
-  }, [refreshKey]);
+  }, []);
+
+  // Manual refresh function
+  const manualRefresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['player'] });
+    queryClient.invalidateQueries({ queryKey: ['team'] });
+    queryClient.invalidateQueries({ queryKey: ['scoreboard'] });
+  };
 
   const currentWeekData = getWeekData(selectedWeek);
   const maxWeek = weeklyRosters.findIndex(w => w.teams.length === 0);
@@ -83,14 +88,13 @@ export default function Home() {
       ) : (
         <MatchupsView
           weekData={currentWeekData}
-          refreshKey={refreshKey}
         />
       )}
     </Container>
   );
 }
 
-function MatchupsView({ weekData, refreshKey }: { weekData: any; refreshKey: number }) {
+function MatchupsView({ weekData }: { weekData: any }) {
   return (
     <Box>
       {weekData.matchups.map((matchup: any, index: number) => {
@@ -103,7 +107,6 @@ function MatchupsView({ weekData, refreshKey }: { weekData: any; refreshKey: num
             team1={team1}
             team2={team2}
             matchupNumber={index + 1}
-            refreshKey={refreshKey}
           />
         );
       })}
@@ -115,17 +118,14 @@ function MatchupContainer({
   team1,
   team2,
   matchupNumber,
-  refreshKey,
 }: {
   team1: any;
   team2: any;
   matchupNumber: number;
-  refreshKey: number;
 }) {
   const { team1Score, team2Score } = useMatchupScores(
     team1?.roster || null,
-    team2?.roster || null,
-    refreshKey
+    team2?.roster || null
   );
 
   return (
